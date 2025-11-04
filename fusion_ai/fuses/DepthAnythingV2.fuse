@@ -1,0 +1,141 @@
+--[[
+DepthAnythingV2 Fuse for Blackmagic Fusion
+Generates depth maps from input images using DepthAnythingV2 model
+]]--
+
+FuRegisterClass("DepthAnythingV2", CT_Tool, {
+    REGS_Name = "Depth Anything V2",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "DAV2",
+    REGS_OpDescription = "Generate depth maps using DepthAnythingV2",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Model size selection
+    InModelSize = self:AddInput("Model Size", "ModelSize", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 1.0,
+        INP_Integer = true,
+        { CCS_AddString = "Small", },
+        { CCS_AddString = "Base", },
+        { CCS_AddString = "Large", },
+    })
+
+    -- Normalize output
+    InNormalize = self:AddInput("Normalize", "Normalize", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 1.0,
+        INP_Integer = true,
+    })
+
+    -- Apply colormap
+    InColormap = self:AddInput("Colormap", "Colormap", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "None", },
+        { CCS_AddString = "Inferno", },
+        { CCS_AddString = "Viridis", },
+        { CCS_AddString = "Plasma", },
+        { CCS_AddString = "Turbo", },
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+    })
+
+    -- Input image
+    InImage = self:AddInput("Input", "Input", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Output image
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local img = InImage:GetValue(req)
+    if not img then
+        return
+    end
+
+    -- Get parameters
+    local model_size_idx = InModelSize:GetValue(req).Value
+    local normalize = InNormalize:GetValue(req).Value == 1
+    local colormap_idx = InColormap:GetValue(req).Value
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local model_sizes = {"small", "base", "large"}
+    local model_size = model_sizes[model_size_idx + 1] or "base"
+
+    local colormaps = {"", "COLORMAP_INFERNO", "COLORMAP_VIRIDIS", "COLORMAP_PLASMA", "COLORMAP_TURBO"}
+    local colormap = colormaps[colormap_idx + 1]
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save input image to temp file
+    local input_path = temp_dir .. "/fusion_ai_input_" .. req.Time .. ".png"
+    local output_path = temp_dir .. "/fusion_ai_depth_" .. req.Time .. ".png"
+
+    img:Save(input_path)
+
+    -- Call Python bridge
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import depth_anything_v2_process; print(depth_anything_v2_process(\'%s\', \'%s\', \'%s\', %s, %s))"',
+        input_path,
+        output_path,
+        model_size,
+        normalize and "True" or "False",
+        colormap ~= "" and ("'" .. colormap .. "'") or "None"
+    )
+
+    -- Execute command
+    local result = os.execute(python_cmd)
+
+    -- Load output image
+    local out_img = nil
+    if result == 0 then
+        out_img = Image({
+            Width = img.Width,
+            Height = img.Height,
+            Depth = img.Depth or 8
+        })
+
+        -- Try to load the generated depth map
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    os.remove(input_path)
+    if result == 0 then
+        os.remove(output_path)
+    end
+
+    OutImage:Set(req, out_img or img)
+end

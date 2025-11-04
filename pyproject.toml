@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fusion-ai"
+version = "0.1.0"
+description = "AI models integration for Blackmagic Design Fusion"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Fusion AI Contributors"}
+]
+keywords = ["fusion", "davinci-resolve", "ai", "depth-estimation", "image-editing", "vfx"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "transformers>=4.35.0",
+    "Pillow>=9.0.0",
+    "numpy>=1.21.0",
+    "opencv-python>=4.5.0",
+    "timm>=0.9.0",
+    "einops>=0.7.0",
+    "huggingface-hub>=0.19.0",
+    "safetensors>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "isort>=5.12.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/fusion_ai"
+Documentation = "https://github.com/yourusername/fusion_ai/blob/main/README.md"
+Repository = "https://github.com/yourusername/fusion_ai"
+Issues = "https://github.com/yourusername/fusion_ai/issues"
+
+[tool.setuptools]
+packages = ["fusion_ai", "fusion_ai.models", "fusion_ai.fuses", "fusion_ai.utils", "fusion_ai.core"]
+
+[tool.setuptools.package-data]
+fusion_ai = ["fuses/*.fuse", "fuses/*.lua"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=fusion_ai --cov-report=html --cov-report=term"
