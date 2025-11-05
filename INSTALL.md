@@ -94,32 +94,54 @@ python -c "from fusion_ai.models import *; print('All models imported successful
 
 ### 6. Install Fusion Fuses
 
-**Automatic installation:**
+**Automatic installation (recommended):**
+
 ```bash
-python scripts/install_fuses.py
+# For Fusion Studio only (default)
+python scripts/configure_fuses.py
+
+# For DaVinci Resolve only
+python scripts/configure_fuses.py --resolve
+
+# For BOTH Fusion Studio and DaVinci Resolve
+python scripts/configure_fuses.py --both
 ```
+
+The script will:
+- Auto-detect the correct Fuses directory
+- Copy all .fuse files
+- Configure each fuse with your venv Python path
+- Work on Windows/macOS/Linux
 
 **Manual installation:**
 
-Copy `.fuse` files from `fusion_ai/fuses/` to your Fusion Fuses directory:
+Copy `.fuse` files from `fusion_ai/fuses/` to the appropriate directory:
 
-- **Windows:** `%APPDATA%\Blackmagic Design\Fusion\Fuses\`
-- **macOS:** `~/Library/Application Support/Blackmagic Design/Fusion/Fuses/`
-- **Linux:** `~/.fusion/BlackmagicDesign/Fusion/Fuses/`
+**Fusion Studio:**
+- Windows: `%APPDATA%\Blackmagic Design\Fusion\Fuses\`
+- macOS: `~/Library/Application Support/Blackmagic Design/Fusion/Fuses/`
+- Linux: `~/.fusion/BlackmagicDesign/Fusion/Fuses/`
 
-**Fuse files to copy:**
-- `DepthAnythingV2.fuse`
-- `QwenEdit.fuse`
-- `AIInpaint.fuse`
-- `AIOutpaint.fuse`
-- `AIUpscale.fuse`
-- `AIStyleTransfer.fuse`
-- `AIFrameExtend.fuse`
-- `AITemporalInpaint.fuse`
-- `AITemporalOutpaint.fuse`
-- `AIVideoGenerate.fuse`
-- `AIControlNet.fuse`
-- `AIWANInpaint.fuse`
+**DaVinci Resolve:**
+- Windows: `%APPDATA%\Blackmagic Design\DaVinci Resolve\Fusion\Fuses\`
+- macOS: `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Fuses/`
+- Linux: `~/.local/share/DaVinci Resolve/Fusion/Fuses/`
+
+**13 AI Fuse files:**
+- `DepthAnythingV2.fuse` - Depth estimation
+- `QwenEdit.fuse` - Vision-language editing
+- `AIInpaint.fuse` - Object removal (basic)
+- `AITemporalInpaint.fuse` - Object removal (temporal)
+- `AIWANInpaint.fuse` - Object removal (advanced WAN)
+- `AIOutpaint.fuse` - Image extension
+- `AITemporalOutpaint.fuse` - Image extension (temporal)
+- `AIUpscale.fuse` - AI super-resolution
+- `AIStyleTransfer.fuse` - Style transfer
+- `AIFrameExtend.fuse` - Frame generation
+- `AIVideoGenerate.fuse` - WAN video generation
+- `AIControlNet.fuse` - ControlNet (pose/edge/depth)
+
+**Note:** If manual install, you must edit each .fuse file to set the Python path. See [docs/INSTALLATION_LOCATIONS.md](docs/INSTALLATION_LOCATIONS.md).
 
 ### 7. Configure Model Cache Directory (Optional)
 
