@@ -360,3 +360,75 @@ def float_to_image(
         return (array * 65535.0).astype(np.uint16)
     else:
         return array.astype(output_dtype)
+
+
+def adjust_depth(
+    depth: np.ndarray,
+    invert: bool = False,
+    depth_min: float = 0.0,
+    depth_max: float = 1.0,
+    contrast: float = 1.0,
+    gamma: float = 1.0
+) -> np.ndarray:
+    """Apply adjustments to depth map for better control.
+
+    Args:
+        depth: Input depth map (float or uint8)
+        invert: Invert depth values (far becomes near)
+        depth_min: Minimum depth clipping value (0-1)
+        depth_max: Maximum depth clipping value (0-1)
+        contrast: Contrast multiplier (0-3, 1=no change)
+        gamma: Gamma correction (0.1-3, 1=no change)
+
+    Returns:
+        Adjusted depth map in same format as input
+    """
+    # Remember original dtype
+    original_dtype = depth.dtype
+
+    # Convert to float for processing
+    if depth.dtype == np.uint8:
+        depth_float = depth.astype(np.float32) / 255.0
+    elif depth.dtype == np.uint16:
+        depth_float = depth.astype(np.float32) / 65535.0
+    else:
+        depth_float = depth.astype(np.float32)
+
+    # Ensure normalized to [0, 1]
+    if depth_float.max() > 1.0 or depth_float.min() < 0.0:
+        depth_min_val = depth_float.min()
+        depth_max_val = depth_float.max()
+        if depth_max_val - depth_min_val > 0:
+            depth_float = (depth_float - depth_min_val) / (depth_max_val - depth_min_val)
+
+    # Apply inversion
+    if invert:
+        depth_float = 1.0 - depth_float
+
+    # Apply depth range clipping
+    if depth_min > 0.0 or depth_max < 1.0:
+        # Remap depth values to new range
+        depth_float = np.clip(depth_float, depth_min, depth_max)
+        # Renormalize to [0, 1]
+        if depth_max > depth_min:
+            depth_float = (depth_float - depth_min) / (depth_max - depth_min)
+
+    # Apply contrast adjustment
+    if contrast != 1.0:
+        # Contrast around midpoint (0.5)
+        depth_float = ((depth_float - 0.5) * contrast) + 0.5
+        depth_float = np.clip(depth_float, 0.0, 1.0)
+
+    # Apply gamma correction
+    if gamma != 1.0:
+        depth_float = np.power(depth_float, gamma)
+
+    # Convert back to original dtype
+    if original_dtype == np.uint8:
+        return (depth_float * 255.0).astype(np.uint8)
+    elif original_dtype == np.uint16:
+        return (depth_float * 65535.0).astype(np.uint16)
+    elif original_dtype == np.float16:
+        return depth_float.astype(np.float16)
+    else:
+        return depth_float.astype(np.float32)

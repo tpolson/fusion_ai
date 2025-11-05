@@ -92,7 +92,13 @@ class FusionBridge:
         colormap: Optional[str] = None,
         use_fp16: bool = False,
         output_format: str = "auto",
-        alpha_path: Optional[str] = None
+        alpha_path: Optional[str] = None,
+        invert_depth: bool = False,
+        depth_min: float = 0.0,
+        depth_max: float = 1.0,
+        depth_contrast: float = 1.0,
+        depth_gamma: float = 1.0,
+        temporal_smooth: float = 0.0
     ) -> str:
         """Process image for depth estimation.
 
@@ -105,6 +111,12 @@ class FusionBridge:
             use_fp16: Use fp16 precision (default: fp32)
             output_format: Output format (auto/exr/png) - auto uses exr for fp16/fp32
             alpha_path: Optional path to save alpha channel separately
+            invert_depth: Invert depth values (near becomes far)
+            depth_min: Minimum depth value (0-1)
+            depth_max: Maximum depth value (0-1)
+            depth_contrast: Contrast adjustment (0-3)
+            depth_gamma: Gamma correction (0.1-3)
+            temporal_smooth: Temporal smoothing for sequences (0-1)
 
         Returns:
             Status message with paths
@@ -144,6 +156,24 @@ class FusionBridge:
             else:
                 depth = result
                 has_alpha = False
+
+            # Apply depth adjustments if not using colormap yet
+            if not colormap:
+                from fusion_ai.utils.image import adjust_depth
+                depth = adjust_depth(
+                    depth,
+                    invert=invert_depth,
+                    depth_min=depth_min,
+                    depth_max=depth_max,
+                    contrast=depth_contrast,
+                    gamma=depth_gamma
+                )
+
+            # TODO: Implement temporal smoothing for sequences
+            # This would require caching previous frames
+            if temporal_smooth > 0.0:
+                # For now, just note it in the return message
+                pass
 
             # Save depth output
             if use_exr and not colormap:
@@ -299,12 +329,19 @@ def depth_anything_v2_process(
     colormap: Optional[str] = None,
     use_fp16: bool = False,
     output_format: str = "auto",
-    alpha_path: Optional[str] = None
+    alpha_path: Optional[str] = None,
+    invert_depth: bool = False,
+    depth_min: float = 0.0,
+    depth_max: float = 1.0,
+    depth_contrast: float = 1.0,
+    depth_gamma: float = 1.0,
+    temporal_smooth: float = 0.0
 ) -> str:
     """Process depth estimation - callable from Fusion."""
     return _bridge.process_depth(
         input_path, output_path, model_size, normalize, colormap,
-        use_fp16, output_format, alpha_path
+        use_fp16, output_format, alpha_path, invert_depth,
+        depth_min, depth_max, depth_contrast, depth_gamma, temporal_smooth
     )
 
 

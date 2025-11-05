@@ -51,7 +51,72 @@ function Create()
         INPID_InputControl = "CheckboxControl",
         INP_Default = 1.0,
         INP_Integer = true,
+        IC_Visible = true,
     })
+
+    -- Depth Adjustments Section
+    self:BeginControlNest("Depth Adjustments", "DepthAdjust", true, {})
+
+    -- Invert depth
+    InInvertDepth = self:AddInput("Invert Depth", "InvertDepth", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        IC_Visible = true,
+    })
+
+    -- Depth range minimum
+    InDepthMin = self:AddInput("Depth Min", "DepthMin", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Depth range maximum
+    InDepthMax = self:AddInput("Depth Max", "DepthMax", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Depth contrast
+    InDepthContrast = self:AddInput("Contrast", "DepthContrast", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 3.0,
+        IC_Visible = true,
+    })
+
+    -- Depth gamma
+    InDepthGamma = self:AddInput("Gamma", "DepthGamma", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.1,
+        INP_MaxScale = 3.0,
+        IC_Visible = true,
+    })
+
+    -- Temporal smoothing (for sequences)
+    InTemporalSmooth = self:AddInput("Temporal Smoothing", "TemporalSmooth", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    self:EndControlNest()
 
     -- Apply colormap
     InColormap = self:AddInput("Colormap", "Colormap", {
@@ -64,6 +129,7 @@ function Create()
         { CCS_AddString = "Viridis", },
         { CCS_AddString = "Plasma", },
         { CCS_AddString = "Turbo", },
+        IC_Visible = true,
     })
 
     -- Preserve alpha channel
@@ -113,6 +179,12 @@ function Process(req)
     local precision_idx = InPrecision:GetValue(req).Value
     local format_idx = InOutputFormat:GetValue(req).Value
     local normalize = InNormalize:GetValue(req).Value == 1
+    local invert_depth = InInvertDepth:GetValue(req).Value == 1
+    local depth_min = InDepthMin:GetValue(req).Value
+    local depth_max = InDepthMax:GetValue(req).Value
+    local depth_contrast = InDepthContrast:GetValue(req).Value
+    local depth_gamma = InDepthGamma:GetValue(req).Value
+    local temporal_smooth = InTemporalSmooth:GetValue(req).Value
     local colormap_idx = InColormap:GetValue(req).Value
     local preserve_alpha = InPreserveAlpha:GetValue(req).Value == 1
     local device_idx = InDevice:GetValue(req).Value
@@ -152,9 +224,9 @@ function Process(req)
     -- Save input as EXR to preserve full precision and alpha
     img:Save(input_path)
 
-    -- Build Python command with all parameters
+    -- Build Python command with all parameters including depth adjustments
     local python_cmd = string.format(
-        'python -c "from fusion_ai.fuses.fusion_bridge import depth_anything_v2_process; import json; result = depth_anything_v2_process(\'%s\', \'%s\', \'%s\', %s, %s, %s, \'%s\', %s); print(result)"',
+        'python -c "from fusion_ai.fuses.fusion_bridge import depth_anything_v2_process; import json; result = depth_anything_v2_process(\'%s\', \'%s\', \'%s\', %s, %s, %s, \'%s\', %s, %s, %f, %f, %f, %f, %f); print(result)"',
         input_path,
         output_path,
         model_size,
@@ -162,7 +234,13 @@ function Process(req)
         colormap ~= "" and ("'" .. colormap .. "'") or "None",
         use_fp16 and "True" or "False",
         output_format,
-        preserve_alpha and ("'" .. alpha_path .. "'") or "None"
+        preserve_alpha and ("'" .. alpha_path .. "'") or "None",
+        invert_depth and "True" or "False",
+        depth_min,
+        depth_max,
+        depth_contrast,
+        depth_gamma,
+        temporal_smooth
     )
 
     -- Execute command and capture output
