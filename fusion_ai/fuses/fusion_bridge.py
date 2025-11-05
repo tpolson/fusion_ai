@@ -17,8 +17,9 @@ from fusion_ai.models.outpainting import StableDiffusionOutpainting
 from fusion_ai.models.upscale import RealESRGAN, StableDiffusionUpscale
 from fusion_ai.models.style_transfer import StyleTransfer, InstantStyleTransfer, StableDiffusionStyleTransfer
 from fusion_ai.models.frame_extension import FrameExtension, FrameInterpolation
-from fusion_ai.models.temporal_consistency import TemporalInpainting, TemporalOutpainting
+from fusion_ai.models.temporal_consistency import TemporalInpainting, TemporalOutpainting, WANInpainting
 from fusion_ai.models.video_generation import WANVideoGenerator
+from fusion_ai.models.controlnet import ControlNetSD, OpenPoseDetector, CannyDetector
 
 
 class FusionBridge:
@@ -775,6 +776,147 @@ def wan_video_process(
             "output_path": output_path,
             "num_frames_generated": len(frames),
             "frame_index": frame_index
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def controlnet_process(
+    prompt: str,
+    control_image_path: str,
+    output_path: str,
+    controlnet_type: str = "openpose",
+    negative_prompt: str = "low quality, blurry",
+    conditioning_scale: float = 1.0,
+    inference_steps: int = 30,
+    guidance_scale: float = 7.5,
+    seed: int = 42,
+    auto_preprocess: bool = True,
+    device: str = "cuda"
+) -> str:
+    """Process ControlNet generation - callable from Fusion."""
+    try:
+        # Load ControlNet model
+        model_id = f"controlnet_{controlnet_type}"
+        if model_id not in _bridge.models:
+            _bridge.models[model_id] = ControlNetSD(
+                controlnet_type=controlnet_type,
+                device=device
+            )
+
+        model = _bridge.models[model_id]
+
+        # Auto-preprocess if requested
+        control_image = control_image_path
+        if auto_preprocess and model.preprocessor:
+            # Extract control signal from input image
+            from fusion_ai.utils.image import save_exr, image_to_float
+            preprocessed = model.preprocessor.preprocess(control_image_path)
+
+            # Save preprocessed control image
+            control_temp_path = control_image_path.replace(".exr", "_preprocessed.exr")
+            result_float = image_to_float(preprocessed, dtype=np.float32)
+            save_exr(result_float, control_temp_path)
+            control_image = control_temp_path
+
+        # Generate image
+        result = model.infer(
+            prompt=prompt,
+            control_image=control_image,
+            negative_prompt=negative_prompt,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
+            controlnet_conditioning_scale=conditioning_scale,
+            seed=seed
+        )
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        # Clean up temp file if created
+        if auto_preprocess and 'control_temp_path' in locals():
+            import os
+            try:
+                os.remove(control_temp_path)
+            except:
+                pass
+
+        return json.dumps({
+            "status": "success",
+            "message": "ControlNet generation completed",
+            "output_path": output_path,
+            "controlnet_type": controlnet_type
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def wan_inpaint_process(
+    input_path: str,
+    mask_path: str,
+    output_path: str,
+    method: str = "sd",
+    temporal_consistency: float = 0.85,
+    prompt: str = "",
+    negative_prompt: str = "blurry, bad quality, distorted",
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5,
+    detect_occlusions: bool = True,
+    reset_state: bool = False,
+    device: str = "cuda"
+) -> str:
+    """Process WAN inpainting - callable from Fusion."""
+    try:
+        # Load WAN inpainting model
+        model_id = f"wan_inpaint_{method}"
+        if model_id not in _bridge.models or reset_state:
+            _bridge.models[model_id] = WANInpainting(method=method, device=device)
+            if reset_state and model_id in _bridge.models:
+                _bridge.models[model_id].reset()
+
+        model = _bridge.models[model_id]
+
+        # Reset state if requested
+        if reset_state:
+            model.reset()
+
+        # Run WAN inpainting
+        result = model.infer(
+            input_path,
+            mask_path,
+            prompt=prompt if prompt else "",
+            negative_prompt=negative_prompt,
+            temporal_consistency=temporal_consistency,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
+            detect_occlusions=detect_occlusions
+        )
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "WAN inpainting completed",
+            "output_path": output_path,
+            "method": method,
+            "occlusion_detection": detect_occlusions
         })
 
     except Exception as e:

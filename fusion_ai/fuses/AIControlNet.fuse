@@ -1,0 +1,219 @@
+--[[
+AIControlNet Fuse for Blackmagic Fusion
+ControlNet-based conditional image generation with OpenPose, Canny, Depth, etc.
+]]--
+
+FuRegisterClass("AIControlNet", CT_Tool, {
+    REGS_Name = "AI ControlNet",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "CTL",
+    REGS_OpDescription = "ControlNet conditional generation",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- ControlNet type
+    InControlNetType = self:AddInput("ControlNet Type", "ControlNetType", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "OpenPose", },
+        { CCS_AddString = "Canny", },
+        { CCS_AddString = "Depth", },
+        { CCS_AddString = "MLSD", },
+        { CCS_AddString = "Normal", },
+        { CCS_AddString = "Scribble", },
+        { CCS_AddString = "Segmentation", },
+        IC_Visible = true,
+    })
+
+    -- Auto-preprocess input (extract pose/edges/etc from input image)
+    InAutoPreprocess = self:AddInput("Auto Preprocess", "AutoPreprocess", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 1.0,
+        INP_Integer = true,
+        IC_Visible = true,
+    })
+
+    -- Prompt for generation
+    InPrompt = self:AddInput("Prompt", "Prompt", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "TextEditControl",
+        TEC_Lines = 3,
+        INP_Default = "high quality, detailed",
+        IC_Visible = true,
+    })
+
+    -- Negative prompt
+    InNegativePrompt = self:AddInput("Negative Prompt", "NegativePrompt", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "TextEditControl",
+        TEC_Lines = 2,
+        INP_Default = "low quality, blurry, distorted",
+        IC_Visible = true,
+    })
+
+    -- ControlNet conditioning scale
+    InConditioningScale = self:AddInput("Conditioning Scale", "ConditioningScale", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 2.0,
+        IC_Visible = true,
+    })
+
+    -- Inference parameters
+    InInferenceSteps = self:AddInput("Inference Steps", "InferenceSteps", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 30,
+        INP_Integer = true,
+        INP_MinScale = 10,
+        INP_MaxScale = 100,
+        IC_Visible = true,
+    })
+
+    InGuidanceScale = self:AddInput("Guidance Scale", "GuidanceScale", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 7.5,
+        INP_MinScale = 1.0,
+        INP_MaxScale = 20.0,
+        IC_Visible = true,
+    })
+
+    -- Random seed
+    InSeed = self:AddInput("Seed", "Seed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 42,
+        INP_Integer = true,
+        INP_MinScale = 0,
+        INP_MaxScale = 999999,
+        IC_Visible = true,
+    })
+
+    -- Precision
+    InPrecision = self:AddInput("Precision", "Precision", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "FP32", },
+        { CCS_AddString = "FP16", },
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Control image input (can be raw image or pre-processed control image)
+    InControl = self:AddInput("Control Image", "ControlImage", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Output generated image
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local control_img = InControl:GetValue(req)
+    if not control_img then
+        return
+    end
+
+    -- Get parameters
+    local controlnet_type_idx = InControlNetType:GetValue(req).Value
+    local auto_preprocess = InAutoPreprocess:GetValue(req).Value == 1
+    local prompt = InPrompt:GetValue(req).Value or "high quality, detailed"
+    local negative_prompt = InNegativePrompt:GetValue(req).Value or "low quality, blurry"
+    local conditioning_scale = InConditioningScale:GetValue(req).Value
+    local inference_steps = InInferenceSteps:GetValue(req).Value
+    local guidance_scale = InGuidanceScale:GetValue(req).Value
+    local seed = InSeed:GetValue(req).Value
+    local precision_idx = InPrecision:GetValue(req).Value
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local controlnet_types = {"openpose", "canny", "depth", "mlsd", "normal", "scribble", "seg"}
+    local controlnet_type = controlnet_types[controlnet_type_idx + 1] or "openpose"
+
+    local use_fp16 = precision_idx == 1
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save control image as EXR
+    local control_path = temp_dir .. "/fusion_ai_controlnet_control_" .. req.Time .. ".exr"
+    local output_path = temp_dir .. "/fusion_ai_controlnet_output_" .. req.Time .. ".exr"
+
+    control_img:Save(control_path)
+
+    -- Escape prompts for command line
+    local escaped_prompt = prompt:gsub('"', '\\"')
+    local escaped_neg_prompt = negative_prompt:gsub('"', '\\"')
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import controlnet_process; import json; result = controlnet_process(\'%s\', \'%s\', \'%s\', \'%s\', \'%s\', %f, %d, %f, %d, %s, \'%s\'); print(result)"',
+        escaped_prompt,
+        control_path,
+        output_path,
+        controlnet_type,
+        escaped_neg_prompt,
+        conditioning_scale,
+        inference_steps,
+        guidance_scale,
+        seed,
+        auto_preprocess and "True" or "False",
+        device
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    os.remove(control_path)
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img or control_img)
+end
