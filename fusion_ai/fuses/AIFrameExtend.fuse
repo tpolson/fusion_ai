@@ -1,0 +1,209 @@
+--[[
+AIFrameExtend Fuse for Blackmagic Fusion
+Create extra frames at shot beginning or end using AI temporal inpainting
+]]--
+
+FuRegisterClass("AIFrameExtend", CT_Tool, {
+    REGS_Name = "AI Frame Extend",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "FEX",
+    REGS_OpDescription = "Create extra frames at shot beginning/end",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Direction (forward or backward)
+    InDirection = self:AddInput("Direction", "Direction", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "Forward (Extend End)", },
+        { CCS_AddString = "Backward (Extend Start)", },
+        IC_Visible = true,
+    })
+
+    -- Number of frames to create
+    InNumFrames = self:AddInput("New Frames", "NumFrames", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 5,
+        INP_Integer = true,
+        INP_MinScale = 1,
+        INP_MaxScale = 30,
+        IC_Visible = true,
+    })
+
+    -- Blend mode
+    InBlendMode = self:AddInput("Blend Mode", "BlendMode", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "Optical Flow", },
+        { CCS_AddString = "Simple Blend", },
+        { CCS_AddString = "AI Inpainting", },
+        IC_Visible = true,
+    })
+
+    -- Use AI refinement
+    InUseInpainting = self:AddInput("AI Refinement", "UseInpainting", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 1.0,
+        INP_Integer = true,
+        IC_Visible = true,
+    })
+
+    -- Frame output index (which extended frame to output)
+    InFrameIndex = self:AddInput("Frame Index", "FrameIndex", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_MinScale = 0,
+        INP_MaxScale = 29,
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Reference frame inputs (2-5 frames)
+    InFrame1 = self:AddInput("Reference Frame 1", "Frame1", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    InFrame2 = self:AddInput("Reference Frame 2", "Frame2", {
+        LINKID_DataType = "Image",
+        LINK_Main = 2,
+    })
+
+    InFrame3 = self:AddInput("Reference Frame 3 (Optional)", "Frame3", {
+        LINKID_DataType = "Image",
+        LINK_Main = 3,
+    })
+
+    InFrame4 = self:AddInput("Reference Frame 4 (Optional)", "Frame4", {
+        LINKID_DataType = "Image",
+        LINK_Main = 4,
+    })
+
+    InFrame5 = self:AddInput("Reference Frame 5 (Optional)", "Frame5", {
+        LINKID_DataType = "Image",
+        LINK_Main = 5,
+    })
+
+    -- Output extended frame
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local frame1 = InFrame1:GetValue(req)
+    local frame2 = InFrame2:GetValue(req)
+
+    if not frame1 or not frame2 then
+        OutImage:Set(req, frame1)
+        return
+    end
+
+    -- Get optional reference frames
+    local frame3 = InFrame3:GetValue(req)
+    local frame4 = InFrame4:GetValue(req)
+    local frame5 = InFrame5:GetValue(req)
+
+    -- Get parameters
+    local direction_idx = InDirection:GetValue(req).Value
+    local num_frames = InNumFrames:GetValue(req).Value
+    local blend_mode_idx = InBlendMode:GetValue(req).Value
+    local use_inpainting = InUseInpainting:GetValue(req).Value == 1
+    local frame_index = InFrameIndex:GetValue(req).Value
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local directions = {"forward", "backward"}
+    local direction = directions[direction_idx + 1] or "forward"
+
+    local blend_modes = {"optical_flow", "simple", "inpainting"}
+    local blend_mode = blend_modes[blend_mode_idx + 1] or "optical_flow"
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save reference frames as EXR
+    local frame_paths = {}
+    local frames = {frame1, frame2, frame3, frame4, frame5}
+
+    for i, frame in ipairs(frames) do
+        if frame then
+            local path = temp_dir .. "/fusion_ai_frameext_ref" .. i .. "_" .. req.Time .. ".exr"
+            frame:Save(path)
+            table.insert(frame_paths, path)
+        end
+    end
+
+    -- Output path for extended frames
+    local output_path = temp_dir .. "/fusion_ai_frameext_output_" .. req.Time .. ".exr"
+
+    -- Build frame paths string (comma-separated)
+    local frames_str = table.concat(frame_paths, ",")
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import frame_extend_process; import json; result = frame_extend_process(\'%s\', \'%s\', \'%s\', %d, \'%s\', %s, %d); print(result)"',
+        frames_str,
+        output_path,
+        direction,
+        num_frames,
+        blend_mode,
+        use_inpainting and "True" or "False",
+        frame_index
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    for _, path in ipairs(frame_paths) do
+        os.remove(path)
+    end
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img or frame1)
+end

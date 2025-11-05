@@ -1,0 +1,175 @@
+--[[
+AIStyleTransfer Fuse for Blackmagic Fusion
+Apply artistic styles from reference images using neural style transfer
+]]--
+
+FuRegisterClass("AIStyleTransfer", CT_Tool, {
+    REGS_Name = "AI Style Transfer",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "STY",
+    REGS_OpDescription = "Apply artistic styles using neural style transfer",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Method selection
+    InMethod = self:AddInput("Method", "Method", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "Neural Style Transfer", },
+        { CCS_AddString = "Instant (Fast)", },
+        IC_Visible = true,
+    })
+
+    -- Style weight
+    InStyleWeight = self:AddInput("Style Weight", "StyleWeight", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1000000.0,
+        INP_MinScale = 100000.0,
+        INP_MaxScale = 10000000.0,
+        IC_Visible = true,
+    })
+
+    -- Content weight
+    InContentWeight = self:AddInput("Content Weight", "ContentWeight", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.1,
+        INP_MaxScale = 10.0,
+        IC_Visible = true,
+    })
+
+    -- Optimization steps
+    InOptimSteps = self:AddInput("Optimization Steps", "OptimSteps", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 300,
+        INP_Integer = true,
+        INP_MinScale = 50,
+        INP_MaxScale = 500,
+        IC_Visible = true,
+    })
+
+    -- Style strength (for instant method)
+    InStyleStrength = self:AddInput("Style Strength", "StyleStrength", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 1.0,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Content image input
+    InContentImage = self:AddInput("Content", "Content", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Style image input
+    InStyleImage = self:AddInput("Style", "Style", {
+        LINKID_DataType = "Image",
+        LINK_Main = 2,
+    })
+
+    -- Output stylized image
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local content_img = InContentImage:GetValue(req)
+    local style_img = InStyleImage:GetValue(req)
+
+    if not content_img or not style_img then
+        OutImage:Set(req, content_img)
+        return
+    end
+
+    -- Get parameters
+    local method_idx = InMethod:GetValue(req).Value
+    local style_weight = InStyleWeight:GetValue(req).Value
+    local content_weight = InContentWeight:GetValue(req).Value
+    local optim_steps = InOptimSteps:GetValue(req).Value
+    local style_strength = InStyleStrength:GetValue(req).Value
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local methods = {"neural", "instant"}
+    local method = methods[method_idx + 1] or "neural"
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save inputs as EXR
+    local content_path = temp_dir .. "/fusion_ai_style_content_" .. req.Time .. ".exr"
+    local style_path = temp_dir .. "/fusion_ai_style_ref_" .. req.Time .. ".exr"
+    local output_path = temp_dir .. "/fusion_ai_style_output_" .. req.Time .. ".exr"
+
+    content_img:Save(content_path)
+    style_img:Save(style_path)
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import style_transfer_process; import json; result = style_transfer_process(\'%s\', \'%s\', \'%s\', \'%s\', %f, %f, %d, %f); print(result)"',
+        content_path,
+        style_path,
+        output_path,
+        method,
+        style_weight,
+        content_weight,
+        optim_steps,
+        style_strength
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    os.remove(content_path)
+    os.remove(style_path)
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img or content_img)
+end

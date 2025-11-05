@@ -13,6 +13,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from fusion_ai.models.depth_anything_v2 import DepthAnythingV2
 from fusion_ai.models.qwen_edit import QwenEdit
 from fusion_ai.models.inpainting import LamaInpainting, StableDiffusionInpainting
+from fusion_ai.models.outpainting import StableDiffusionOutpainting
+from fusion_ai.models.upscale import RealESRGAN, StableDiffusionUpscale
+from fusion_ai.models.style_transfer import StyleTransfer, InstantStyleTransfer
+from fusion_ai.models.frame_extension import FrameExtension, FrameInterpolation
 
 
 class FusionBridge:
@@ -363,6 +367,239 @@ def inpaint_process(
 ) -> str:
     """Process inpainting - callable from Fusion."""
     return _bridge.process_inpaint(input_path, mask_path, output_path, method, prompt if prompt else None)
+
+
+def outpaint_process(
+    input_path: str,
+    output_path: str,
+    extend_pixels: int = 256,
+    direction: str = "all",
+    prompt: str = "",
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5
+) -> str:
+    """Process outpainting - callable from Fusion."""
+    try:
+        # Load model if not loaded
+        model_id = "outpaint_sd"
+        if model_id not in _bridge.models:
+            _bridge.models[model_id] = StableDiffusionOutpainting()
+
+        model = _bridge.models[model_id]
+
+        # Run outpainting
+        result = model.infer(
+            input_path,
+            extend_pixels=extend_pixels,
+            direction=direction,
+            prompt=prompt if prompt else None,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale
+        )
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Outpainting completed",
+            "output_path": output_path
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def upscale_process(
+    input_path: str,
+    output_path: str,
+    method: str = "realesrgan",
+    model_variant: str = "RealESRGAN_x4plus",
+    scale: float = 4.0,
+    prompt: str = "",
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5
+) -> str:
+    """Process upscaling - callable from Fusion."""
+    try:
+        if method == "realesrgan":
+            # Load Real-ESRGAN model
+            model_id = f"upscale_{model_variant}"
+            if model_id not in _bridge.models:
+                _bridge.models[model_id] = RealESRGAN(model_name=model_variant)
+
+            model = _bridge.models[model_id]
+
+            # Run upscaling
+            result = model.infer(input_path, outscale=scale)
+
+        elif method == "sd":
+            # Load SD upscaler
+            model_id = "upscale_sd"
+            if model_id not in _bridge.models:
+                _bridge.models[model_id] = StableDiffusionUpscale()
+
+            model = _bridge.models[model_id]
+
+            # Run SD upscaling
+            result = model.infer(
+                input_path,
+                prompt=prompt if prompt else "high quality, detailed",
+                num_inference_steps=inference_steps,
+                guidance_scale=guidance_scale
+            )
+        else:
+            raise ValueError(f"Unknown upscale method: {method}")
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Upscaling completed",
+            "output_path": output_path,
+            "method": method,
+            "scale": scale
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def style_transfer_process(
+    content_path: str,
+    style_path: str,
+    output_path: str,
+    method: str = "neural",
+    style_weight: float = 1e6,
+    content_weight: float = 1.0,
+    num_steps: int = 300,
+    alpha: float = 1.0
+) -> str:
+    """Process style transfer - callable from Fusion."""
+    try:
+        if method == "neural":
+            # Load neural style transfer
+            model_id = "style_transfer_neural"
+            if model_id not in _bridge.models:
+                _bridge.models[model_id] = StyleTransfer()
+
+            model = _bridge.models[model_id]
+
+            # Run style transfer
+            result = model.infer(
+                content_path,
+                style_path,
+                style_weight=style_weight,
+                content_weight=content_weight,
+                num_steps=num_steps
+            )
+
+        elif method == "instant":
+            # Load instant style transfer
+            model_id = "style_transfer_instant"
+            if model_id not in _bridge.models:
+                _bridge.models[model_id] = InstantStyleTransfer()
+
+            model = _bridge.models[model_id]
+
+            # Run instant style transfer
+            result = model.infer(content_path, style_path, alpha=alpha)
+
+        else:
+            raise ValueError(f"Unknown style transfer method: {method}")
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Style transfer completed",
+            "output_path": output_path,
+            "method": method
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def frame_extend_process(
+    frame_paths: str,  # Comma-separated paths
+    output_path: str,
+    direction: str = "forward",
+    num_frames: int = 5,
+    blend_mode: str = "optical_flow",
+    use_inpainting: bool = True,
+    frame_index: int = 0
+) -> str:
+    """Process frame extension - callable from Fusion."""
+    try:
+        # Parse frame paths
+        paths = [p.strip() for p in frame_paths.split(',')]
+
+        # Load frame extension model
+        model_id = "frame_extend"
+        if model_id not in _bridge.models:
+            _bridge.models[model_id] = FrameExtension()
+
+        model = _bridge.models[model_id]
+
+        # Run frame extension
+        extended_frames = model.infer(
+            paths,
+            direction=direction,
+            num_new_frames=num_frames,
+            blend_mode=blend_mode,
+            use_inpainting=use_inpainting
+        )
+
+        # Get requested frame index
+        if frame_index >= len(extended_frames):
+            frame_index = len(extended_frames) - 1
+
+        result = extended_frames[frame_index]
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Frame extension completed",
+            "output_path": output_path,
+            "num_frames_generated": len(extended_frames),
+            "frame_index": frame_index
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
 
 
 if __name__ == "__main__":
