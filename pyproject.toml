@@ -55,6 +55,17 @@ inpainting = [
     "diffusers>=0.21.0",
     "accelerate>=0.25.0",
 ]
+upscaling = [
+    "realesrgan>=0.3.0",
+    "basicsr>=1.4.2",
+]
+all = [
+    "simple-lama-inpainting>=0.1.0",
+    "diffusers>=0.21.0",
+    "accelerate>=0.25.0",
+    "realesrgan>=0.3.0",
+    "basicsr>=1.4.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/fusion_ai"
