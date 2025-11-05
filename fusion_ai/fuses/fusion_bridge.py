@@ -135,7 +135,10 @@ class FusionBridge:
             # Save alpha channel if present and requested
             alpha_saved = None
             if has_alpha and alpha_path:
-                Image.fromarray(alpha).save(alpha_path)
+                # Save alpha as EXR to preserve precision
+                alpha_float = alpha.astype(np.float32) / 255.0 if alpha.dtype == np.uint8 else alpha
+                from fusion_ai.utils.image import save_exr
+                save_exr(alpha_float, alpha_path, channels=['A'])
                 alpha_saved = alpha_path
 
             return json.dumps({

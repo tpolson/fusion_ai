@@ -73,7 +73,9 @@ class BaseModel(ABC):
         alpha_channel = None
 
         if isinstance(image, (str, Path)):
-            image = Image.open(image)
+            # Use load_image utility which handles EXR and alpha channels
+            from fusion_ai.utils.image import load_image as util_load_image
+            image = util_load_image(image, mode=None, preserve_alpha=preserve_alpha)
         elif isinstance(image, np.ndarray):
             # Handle numpy arrays - detect number of channels
             if image.ndim == 2:

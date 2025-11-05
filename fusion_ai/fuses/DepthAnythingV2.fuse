@@ -144,11 +144,12 @@ function Process(req)
         depth_ext = ".exr"
     end
 
-    -- Save input image to temp file (preserve alpha if present)
-    local input_path = temp_dir .. "/fusion_ai_input_" .. req.Time .. ".png"
+    -- Use EXR for input to preserve precision and alpha
+    local input_path = temp_dir .. "/fusion_ai_input_" .. req.Time .. ".exr"
     local output_path = temp_dir .. "/fusion_ai_depth_" .. req.Time .. depth_ext
-    local alpha_path = temp_dir .. "/fusion_ai_alpha_" .. req.Time .. ".png"
+    local alpha_path = temp_dir .. "/fusion_ai_alpha_" .. req.Time .. ".exr"
 
+    -- Save input as EXR to preserve full precision and alpha
     img:Save(input_path)
 
     -- Build Python command with all parameters

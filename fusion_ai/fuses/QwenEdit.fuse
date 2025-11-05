@@ -82,8 +82,8 @@ function Process(req)
     local comp = self.Comp
     local temp_dir = comp:MapPath("Temp:")
 
-    -- Save input image to temp file
-    local input_path = temp_dir .. "/fusion_ai_qwen_input_" .. req.Time .. ".png"
+    -- Save input image as EXR to preserve precision and alpha
+    local input_path = temp_dir .. "/fusion_ai_qwen_input_" .. req.Time .. ".exr"
     img:Save(input_path)
 
     -- Escape prompt for command line

@@ -11,16 +11,54 @@ def load_image(
     mode: Optional[str] = "RGB",
     preserve_alpha: bool = True
 ) -> Image.Image:
-    """Load an image from file.
+    """Load an image from file, including EXR with alpha support.
 
     Args:
-        image_path: Path to image file
+        image_path: Path to image file (PNG, EXR, etc.)
         mode: Image mode (RGB, RGBA, L, etc.). If None, keeps original mode
         preserve_alpha: If True and image has alpha, convert to RGBA instead of RGB
 
     Returns:
         PIL Image
     """
+    image_path = Path(image_path)
+
+    # Handle EXR files specially
+    if image_path.suffix.lower() == '.exr':
+        try:
+            # Load EXR with all channels
+            exr_data = load_exr(image_path, channels=None)
+
+            # Convert to PIL Image
+            if exr_data.ndim == 2:
+                # Single channel - convert to RGB
+                image = Image.fromarray((np.clip(exr_data, 0, 1) * 255).astype(np.uint8))
+                if mode and mode != "L":
+                    image = image.convert(mode if mode else "RGB")
+            elif exr_data.shape[2] == 3:
+                # RGB
+                image = Image.fromarray((np.clip(exr_data, 0, 1) * 255).astype(np.uint8), mode='RGB')
+            elif exr_data.shape[2] == 4:
+                # RGBA
+                image = Image.fromarray((np.clip(exr_data, 0, 1) * 255).astype(np.uint8), mode='RGBA')
+            else:
+                # Multiple channels - use first 3 as RGB
+                image = Image.fromarray((np.clip(exr_data[:, :, :3], 0, 1) * 255).astype(np.uint8), mode='RGB')
+
+            # Handle mode conversion with alpha preservation
+            if preserve_alpha and image.mode == 'RGBA' and mode == "RGB":
+                mode = "RGBA"
+
+            if mode and image.mode != mode:
+                image = image.convert(mode)
+
+            return image
+
+        except Exception as e:
+            print(f"Warning: Failed to load EXR with custom loader: {e}")
+            print("Falling back to PIL Image.open()")
+
+    # Standard image loading for non-EXR files
     image = Image.open(image_path)
 
     # Preserve alpha channel if requested
@@ -154,10 +192,10 @@ def load_exr(
 
     Args:
         exr_path: Path to EXR file
-        channels: List of channel names to load (default: ['R', 'G', 'B'])
+        channels: List of channel names to load. If None, auto-detects RGB/RGBA.
 
     Returns:
-        Numpy array in fp32 format
+        Numpy array in fp32 format (H, W) for single channel or (H, W, C) for multi-channel
     """
     try:
         import OpenEXR
@@ -172,13 +210,24 @@ def load_exr(
         width = dw.max.x - dw.min.x + 1
         height = dw.max.y - dw.min.y + 1
 
-        # Default to RGB channels
+        # Auto-detect channels if not specified
         if channels is None:
-            available_channels = header['channels'].keys()
-            if 'A' in available_channels:
+            available_channels = list(header['channels'].keys())
+
+            # Try common channel combinations
+            if all(c in available_channels for c in ['R', 'G', 'B', 'A']):
                 channels = ['R', 'G', 'B', 'A']
-            else:
+            elif all(c in available_channels for c in ['R', 'G', 'B']):
                 channels = ['R', 'G', 'B']
+            elif 'Y' in available_channels:
+                # Single luminance channel
+                channels = ['Y']
+            elif 'Z' in available_channels:
+                # Depth channel
+                channels = ['Z']
+            else:
+                # Use first available channel(s)
+                channels = available_channels[:min(4, len(available_channels))]
 
         # Read channels
         channel_data = []
@@ -189,7 +238,9 @@ def load_exr(
                 channel_data.append(np.array(channel_array).reshape(height, width))
 
         # Stack channels
-        if len(channel_data) == 1:
+        if len(channel_data) == 0:
+            raise ValueError(f"No valid channels found in EXR file: {exr_path}")
+        elif len(channel_data) == 1:
             return channel_data[0].astype(np.float32)
         else:
             return np.stack(channel_data, axis=-1).astype(np.float32)
