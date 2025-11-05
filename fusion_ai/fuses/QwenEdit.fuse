@@ -22,14 +22,25 @@ function Create()
         { CCS_AddString = "Describe", },
         { CCS_AddString = "Answer Question", },
         { CCS_AddString = "Edit Instruction", },
+        { CCS_AddString = "Remove Object (Inpaint)", },
     })
 
-    -- Text prompt
+    -- Text prompt (optional for removal mode)
     InPrompt = self:AddInput("Prompt", "Prompt", {
         LINKID_DataType = "Text",
         INPID_InputControl = "TextEditControl",
         TEC_Lines = 3,
         INP_Default = "Describe this image in detail",
+    })
+
+    -- Inpainting method
+    InInpaintMethod = self:AddInput("Inpaint Method", "InpaintMethod", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "LaMa (Fast)", },
+        { CCS_AddString = "Stable Diffusion", },
     })
 
     -- Device selection
@@ -48,7 +59,13 @@ function Create()
         LINK_Main = 1,
     })
 
-    -- Output (pass-through image)
+    -- Matte/Mask input for object removal
+    InMatte = self:AddInput("Matte", "Matte", {
+        LINKID_DataType = "Image",
+        LINK_Main = 2,
+    })
+
+    -- Output image (edited or pass-through)
     OutImage = self:AddOutput("Output", "Output", {
         LINKID_DataType = "Image",
         LINK_Main = 1,
@@ -69,11 +86,16 @@ function Process(req)
     -- Get parameters
     local mode_idx = InMode:GetValue(req).Value
     local prompt = InPrompt:GetValue(req).Value or "Describe this image"
+    local inpaint_method_idx = InInpaintMethod:GetValue(req).Value
     local device_idx = InDevice:GetValue(req).Value
+    local matte = InMatte:GetValue(req)
 
     -- Map to actual values
-    local modes = {"describe", "answer", "edit"}
+    local modes = {"describe", "answer", "edit", "inpaint"}
     local mode = modes[mode_idx + 1] or "describe"
+
+    local inpaint_methods = {"lama", "sd"}
+    local inpaint_method = inpaint_methods[inpaint_method_idx + 1] or "lama"
 
     local devices = {"cuda", "cpu"}
     local device = devices[device_idx + 1] or "cuda"
@@ -84,36 +106,87 @@ function Process(req)
 
     -- Save input image as EXR to preserve precision and alpha
     local input_path = temp_dir .. "/fusion_ai_qwen_input_" .. req.Time .. ".exr"
+    local mask_path = nil
+    local output_path = temp_dir .. "/fusion_ai_qwen_output_" .. req.Time .. ".exr"
+
     img:Save(input_path)
 
-    -- Escape prompt for command line
-    local escaped_prompt = prompt:gsub('"', '\\"')
-
-    -- Call Python bridge
-    local python_cmd = string.format(
-        'python -c "from fusion_ai.fuses.fusion_bridge import qwen_process; import json; result = qwen_process(\'%s\', \'%s\', \'%s\'); print(json.loads(result).get(\'result\', \'\'))"',
-        input_path,
-        escaped_prompt,
-        mode
-    )
-
-    -- Execute command and capture output
-    local handle = io.popen(python_cmd)
-    local result_text = ""
-    if handle then
-        result_text = handle:read("*a")
-        handle:close()
+    -- Save matte if in inpaint mode and matte is connected
+    if mode == "inpaint" and matte then
+        mask_path = temp_dir .. "/fusion_ai_qwen_mask_" .. req.Time .. ".exr"
+        matte:Save(mask_path)
     end
 
-    -- Clean up temp file
+    local result_text = ""
+    local out_img = img  -- Default to pass-through
+
+    -- Handle different modes
+    if mode == "inpaint" and mask_path then
+        -- Inpainting mode - remove object
+        -- Escape prompt for command line
+        local escaped_prompt = prompt:gsub('"', '\\"')
+
+        local python_cmd = string.format(
+            'python -c "from fusion_ai.fuses.fusion_bridge import inpaint_process; import json; result = inpaint_process(\'%s\', \'%s\', \'%s\', \'%s\', \'%s\'); print(result)"',
+            input_path,
+            mask_path,
+            output_path,
+            inpaint_method,
+            escaped_prompt
+        )
+
+        -- Execute command and capture output
+        local handle = io.popen(python_cmd)
+        local json_result = ""
+        if handle then
+            json_result = handle:read("*a")
+            handle:close()
+        end
+
+        -- Try to load the output image
+        if json_result and json_result ~= "" then
+            local success = pcall(function()
+                local loaded = Image(output_path)
+                if loaded then
+                    out_img = loaded
+                    result_text = "Object removed successfully"
+                end
+            end)
+        end
+
+        -- Clean up
+        if mask_path then os.remove(mask_path) end
+        pcall(function() os.remove(output_path) end)
+
+    else
+        -- Text-based modes (describe, answer, edit)
+        -- Escape prompt for command line
+        local escaped_prompt = prompt:gsub('"', '\\"')
+
+        local python_cmd = string.format(
+            'python -c "from fusion_ai.fuses.fusion_bridge import qwen_process; import json; result = qwen_process(\'%s\', \'%s\', \'%s\'); print(json.loads(result).get(\'result\', \'\'))"',
+            input_path,
+            escaped_prompt,
+            mode
+        )
+
+        -- Execute command and capture output
+        local handle = io.popen(python_cmd)
+        if handle then
+            result_text = handle:read("*a")
+            handle:close()
+        end
+    end
+
+    -- Clean up input temp file
     os.remove(input_path)
 
     -- Output results
-    OutImage:Set(req, img)  -- Pass through original image
+    OutImage:Set(req, out_img)
     OutText:Set(req, Text(result_text or "No result"))
 
     -- Also print to console
     if result_text and result_text ~= "" then
-        print("Qwen Result: " .. result_text)
+        print("AI Result: " .. result_text)
     end
 end

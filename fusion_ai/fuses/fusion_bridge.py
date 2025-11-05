@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from fusion_ai.models.depth_anything_v2 import DepthAnythingV2
 from fusion_ai.models.qwen_edit import QwenEdit
+from fusion_ai.models.inpainting import LamaInpainting, StableDiffusionInpainting
 
 
 class FusionBridge:
@@ -55,6 +56,29 @@ class FusionBridge:
             model_id = "qwen_edit"
             if model_id not in self.models:
                 self.models[model_id] = QwenEdit(device=device)
+            return json.dumps({"status": "success", "message": f"Loaded {model_id}"})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    def load_inpainting_model(self, method: str = "lama", device: str = "cuda") -> str:
+        """Load inpainting model.
+
+        Args:
+            method: Inpainting method (lama/sd)
+            device: Device to use
+
+        Returns:
+            Status message
+        """
+        try:
+            model_id = f"inpaint_{method}"
+            if model_id not in self.models:
+                if method == "lama":
+                    self.models[model_id] = LamaInpainting(device=device)
+                elif method == "sd":
+                    self.models[model_id] = StableDiffusionInpainting(device=device)
+                else:
+                    return json.dumps({"status": "error", "message": f"Unknown method: {method}"})
             return json.dumps({"status": "success", "message": f"Loaded {model_id}"})
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
@@ -201,6 +225,67 @@ class FusionBridge:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
+    def process_inpaint(
+        self,
+        input_path: str,
+        mask_path: str,
+        output_path: str,
+        method: str = "lama",
+        prompt: Optional[str] = None,
+        device: str = "cuda"
+    ) -> str:
+        """Process image inpainting for object removal.
+
+        Args:
+            input_path: Input image path
+            mask_path: Mask image path (white = remove, black = keep)
+            output_path: Output inpainted image path
+            method: Inpainting method (lama/sd)
+            prompt: Optional prompt for SD inpainting
+            device: Device to use
+
+        Returns:
+            Status message
+        """
+        try:
+            # Load model if not loaded
+            model_id = f"inpaint_{method}"
+            if model_id not in self.models:
+                self.load_inpainting_model(method, device)
+
+            model = self.models[model_id]
+
+            # Run inpainting
+            if method == "sd" and prompt:
+                result = model.infer(input_path, mask_path, prompt=prompt)
+            else:
+                result = model.infer(input_path, mask_path)
+
+            # Save output based on format
+            if output_path.endswith('.exr'):
+                from fusion_ai.utils.image import save_exr, image_to_float
+                # Convert to float and save as EXR
+                result_float = image_to_float(result, dtype=np.float32)
+                save_exr(result_float, output_path)
+            else:
+                # Save as standard image format
+                Image.fromarray(result).save(output_path)
+
+            return json.dumps({
+                "status": "success",
+                "message": "Inpainting completed",
+                "output_path": output_path,
+                "method": method
+            })
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "status": "error",
+                "message": str(e),
+                "traceback": traceback.format_exc()
+            })
+
 
 # Global bridge instance
 _bridge = FusionBridge()
@@ -230,6 +315,17 @@ def qwen_process(
 ) -> str:
     """Process with Qwen - callable from Fusion."""
     return _bridge.process_qwen(input_path, prompt, mode)
+
+
+def inpaint_process(
+    input_path: str,
+    mask_path: str,
+    output_path: str,
+    method: str = "lama",
+    prompt: str = ""
+) -> str:
+    """Process inpainting - callable from Fusion."""
+    return _bridge.process_inpaint(input_path, mask_path, output_path, method, prompt if prompt else None)
 
 
 if __name__ == "__main__":
