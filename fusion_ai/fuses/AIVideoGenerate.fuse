@@ -1,0 +1,216 @@
+--[[
+AIVideoGenerate Fuse for Blackmagic Fusion
+WAN (Warp-Aware Neural) video generation with temporal consistency
+]]--
+
+FuRegisterClass("AIVideoGenerate", CT_Tool, {
+    REGS_Name = "AI Video Generate",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "VID",
+    REGS_OpDescription = "WAN video generation with temporal consistency",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Prompt for video generation
+    InPrompt = self:AddInput("Prompt", "Prompt", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "TextEditControl",
+        TEC_Lines = 3,
+        INP_Default = "cinematic video",
+        IC_Visible = true,
+    })
+
+    -- Number of frames to generate
+    InNumFrames = self:AddInput("Number of Frames", "NumFrames", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 16,
+        INP_Integer = true,
+        INP_MinScale = 4,
+        INP_MaxScale = 64,
+        IC_Visible = true,
+    })
+
+    -- Frame dimensions
+    InWidth = self:AddInput("Width", "Width", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 512,
+        INP_Integer = true,
+        INP_MinScale = 256,
+        INP_MaxScale = 1024,
+        IC_Visible = true,
+    })
+
+    InHeight = self:AddInput("Height", "Height", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 512,
+        INP_Integer = true,
+        INP_MinScale = 256,
+        INP_MaxScale = 1024,
+        IC_Visible = true,
+    })
+
+    -- Inference steps
+    InInferenceSteps = self:AddInput("Inference Steps", "InferenceSteps", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 50,
+        INP_Integer = true,
+        INP_MinScale = 20,
+        INP_MaxScale = 100,
+        IC_Visible = true,
+    })
+
+    -- Guidance scale
+    InGuidanceScale = self:AddInput("Guidance Scale", "GuidanceScale", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 7.5,
+        INP_MinScale = 1.0,
+        INP_MaxScale = 20.0,
+        IC_Visible = true,
+    })
+
+    -- Temporal consistency strength
+    InTemporalConsistency = self:AddInput("Temporal Consistency", "TemporalConsistency", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.7,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Random seed
+    InSeed = self:AddInput("Seed", "Seed", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 42,
+        INP_Integer = true,
+        INP_MinScale = 0,
+        INP_MaxScale = 999999,
+        IC_Visible = true,
+    })
+
+    -- Frame index to output
+    InFrameIndex = self:AddInput("Frame Index", "FrameIndex", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0,
+        INP_Integer = true,
+        INP_MinScale = 0,
+        INP_MaxScale = 63,
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Optional reference frame input
+    InReferenceFrame = self:AddInput("Reference Frame (Optional)", "ReferenceFrame", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Output generated frame
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    -- Get parameters
+    local prompt = InPrompt:GetValue(req).Value or "cinematic video"
+    local num_frames = InNumFrames:GetValue(req).Value
+    local width = InWidth:GetValue(req).Value
+    local height = InHeight:GetValue(req).Value
+    local inference_steps = InInferenceSteps:GetValue(req).Value
+    local guidance_scale = InGuidanceScale:GetValue(req).Value
+    local temporal_consistency = InTemporalConsistency:GetValue(req).Value
+    local seed = InSeed:GetValue(req).Value
+    local frame_index = InFrameIndex:GetValue(req).Value
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Get optional reference frame
+    local ref_frame = InReferenceFrame:GetValue(req)
+
+    -- Map device
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save reference frame if provided
+    local ref_frame_path = ""
+    if ref_frame then
+        ref_frame_path = temp_dir .. "/fusion_ai_video_ref_" .. req.Time .. ".exr"
+        ref_frame:Save(ref_frame_path)
+    end
+
+    -- Output path for generated frame
+    local output_path = temp_dir .. "/fusion_ai_video_output_" .. req.Time .. ".exr"
+
+    -- Escape prompt for command line
+    local escaped_prompt = prompt:gsub('"', '\\"')
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import wan_video_process; import json; result = wan_video_process(\'%s\', \'%s\', \'%s\', %d, %d, %d, %d, %f, %f, %d, %d); print(result)"',
+        escaped_prompt,
+        ref_frame_path,
+        output_path,
+        num_frames,
+        width,
+        height,
+        inference_steps,
+        guidance_scale,
+        temporal_consistency,
+        seed,
+        frame_index
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    if ref_frame_path ~= "" then
+        os.remove(ref_frame_path)
+    end
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img)
+end

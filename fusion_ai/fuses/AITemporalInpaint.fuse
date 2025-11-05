@@ -1,0 +1,188 @@
+--[[
+AITemporalInpaint Fuse for Blackmagic Fusion
+Temporally consistent object removal across video frames
+]]--
+
+FuRegisterClass("AITemporalInpaint", CT_Tool, {
+    REGS_Name = "AI Temporal Inpaint",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "TIP",
+    REGS_OpDescription = "Temporally consistent object removal",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Inpainting method
+    InMethod = self:AddInput("Method", "Method", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "LaMa (Fast)", },
+        { CCS_AddString = "Stable Diffusion", },
+        IC_Visible = true,
+    })
+
+    -- Temporal consistency strength
+    InTemporalConsistency = self:AddInput("Temporal Consistency", "TemporalConsistency", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.7,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Prompt (for SD method)
+    InPrompt = self:AddInput("Prompt (SD Only)", "Prompt", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "TextEditControl",
+        TEC_Lines = 2,
+        INP_Default = "",
+        IC_Visible = true,
+    })
+
+    -- Inference steps
+    InInferenceSteps = self:AddInput("Inference Steps (SD)", "InferenceSteps", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 50,
+        INP_Integer = true,
+        INP_MinScale = 20,
+        INP_MaxScale = 100,
+        IC_Visible = true,
+    })
+
+    -- Guidance scale
+    InGuidanceScale = self:AddInput("Guidance Scale (SD)", "GuidanceScale", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 7.5,
+        INP_MinScale = 1.0,
+        INP_MaxScale = 20.0,
+        IC_Visible = true,
+    })
+
+    -- Reset temporal state
+    InResetState = self:AddInput("Reset State", "ResetState", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Input image
+    InImage = self:AddInput("Input", "Input", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Mask input
+    InMask = self:AddInput("Mask", "Mask", {
+        LINKID_DataType = "Image",
+        LINK_Main = 2,
+    })
+
+    -- Output inpainted image
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local img = InImage:GetValue(req)
+    local mask = InMask:GetValue(req)
+
+    if not img or not mask then
+        OutImage:Set(req, img)
+        return
+    end
+
+    -- Get parameters
+    local method_idx = InMethod:GetValue(req).Value
+    local temporal_consistency = InTemporalConsistency:GetValue(req).Value
+    local prompt = InPrompt:GetValue(req).Value or ""
+    local inference_steps = InInferenceSteps:GetValue(req).Value
+    local guidance_scale = InGuidanceScale:GetValue(req).Value
+    local reset_state = InResetState:GetValue(req).Value == 1
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local methods = {"lama", "sd"}
+    local method = methods[method_idx + 1] or "lama"
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save inputs as EXR
+    local input_path = temp_dir .. "/fusion_ai_temporal_inpaint_input_" .. req.Time .. ".exr"
+    local mask_path = temp_dir .. "/fusion_ai_temporal_inpaint_mask_" .. req.Time .. ".exr"
+    local output_path = temp_dir .. "/fusion_ai_temporal_inpaint_output_" .. req.Time .. ".exr"
+
+    img:Save(input_path)
+    mask:Save(mask_path)
+
+    -- Escape prompt for command line
+    local escaped_prompt = prompt:gsub('"', '\\"')
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import temporal_inpaint_process; import json; result = temporal_inpaint_process(\'%s\', \'%s\', \'%s\', \'%s\', %f, \'%s\', %d, %f, %s); print(result)"',
+        input_path,
+        mask_path,
+        output_path,
+        method,
+        temporal_consistency,
+        escaped_prompt,
+        inference_steps,
+        guidance_scale,
+        reset_state and "True" or "False"
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    os.remove(input_path)
+    os.remove(mask_path)
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img or img)
+end

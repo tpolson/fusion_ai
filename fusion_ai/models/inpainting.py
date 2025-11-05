@@ -1,13 +1,14 @@
 """Inpainting model for object removal and image completion."""
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, List
 import torch
 import numpy as np
 from PIL import Image
 
 from fusion_ai.core.base_model import BaseModel
 from fusion_ai.config import CACHE_DIR
+from fusion_ai.utils.lora import LoRAManager
 
 
 class LamaInpainting(BaseModel):
@@ -92,6 +93,7 @@ class StableDiffusionInpainting(BaseModel):
         self,
         device: Optional[str] = None,
         cache_dir: Optional[Path] = None,
+        lora_dir: Optional[Path] = None,
         use_fp16: bool = False,
         **kwargs
     ):
@@ -100,10 +102,13 @@ class StableDiffusionInpainting(BaseModel):
         Args:
             device: Device to run inference on
             cache_dir: Directory to cache models
+            lora_dir: Directory containing LoRA files
             use_fp16: Use fp16 precision
             **kwargs: Additional arguments
         """
         self.use_fp16 = use_fp16
+        self.lora_dir = lora_dir
+        self.lora_manager = LoRAManager(lora_dir)
         model_name = "stable_diffusion_inpainting"
         super().__init__(model_name, device, cache_dir, **kwargs)
         self.load_model()
@@ -148,6 +153,8 @@ class StableDiffusionInpainting(BaseModel):
         negative_prompt: str = "blurry, bad quality, distorted",
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
+        lora_paths: Optional[Union[str, List[str]]] = None,
+        lora_weights: Optional[Union[float, List[float]]] = None,
         **kwargs
     ) -> np.ndarray:
         """Perform inpainting with prompt guidance.
@@ -159,6 +166,8 @@ class StableDiffusionInpainting(BaseModel):
             negative_prompt: Negative prompt
             num_inference_steps: Number of denoising steps
             guidance_scale: Guidance scale
+            lora_paths: Optional LoRA file path(s) to apply
+            lora_weights: Optional LoRA weight(s) (0-1)
             **kwargs: Additional inference parameters
 
         Returns:
@@ -176,6 +185,22 @@ class StableDiffusionInpainting(BaseModel):
         if not prompt:
             prompt = "natural background, seamless fill, realistic lighting"
 
+        # Apply LoRAs if provided
+        if lora_paths:
+            if isinstance(lora_paths, str):
+                lora_paths = [lora_paths]
+            if lora_weights is None:
+                lora_weights = [0.8] * len(lora_paths)
+            elif isinstance(lora_weights, (int, float)):
+                lora_weights = [lora_weights] * len(lora_paths)
+
+            for lora_path, lora_weight in zip(lora_paths, lora_weights):
+                self.model = self.lora_manager.load_lora(
+                    self.model,
+                    lora_path,
+                    weight=lora_weight
+                )
+
         # Perform inpainting
         result = self.model(
             prompt=prompt,
@@ -186,6 +211,10 @@ class StableDiffusionInpainting(BaseModel):
             guidance_scale=guidance_scale,
             **kwargs
         ).images[0]
+
+        # Unload LoRAs for next inference
+        if lora_paths:
+            self.lora_manager.unload_loras(self.model)
 
         # Convert to numpy array
         if isinstance(result, Image.Image):

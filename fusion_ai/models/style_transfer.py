@@ -1,13 +1,14 @@
 """Style transfer models for applying artistic styles to images."""
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, List, Dict
 import torch
 import numpy as np
 from PIL import Image
 
 from fusion_ai.core.base_model import BaseModel
 from fusion_ai.config import CACHE_DIR
+from fusion_ai.utils.lora import LoRAManager
 
 
 class StyleTransfer(BaseModel):
@@ -256,3 +257,165 @@ class InstantStyleTransfer(BaseModel):
         # Can be replaced with faster models
         st = StyleTransfer(device=self.device, cache_dir=self.cache_dir)
         return st.infer(content_image, style_image, num_steps=100, **kwargs)
+
+
+class StableDiffusionStyleTransfer(BaseModel):
+    """Style transfer using Stable Diffusion with LoRA support."""
+
+    def __init__(
+        self,
+        device: Optional[str] = None,
+        cache_dir: Optional[Path] = None,
+        lora_dir: Optional[Path] = None,
+        use_fp16: bool = False,
+        **kwargs
+    ):
+        """Initialize SD style transfer.
+
+        Args:
+            device: Device to run inference on
+            cache_dir: Directory to cache models
+            lora_dir: Directory containing LoRA files
+            use_fp16: Use fp16 precision
+            **kwargs: Additional arguments
+        """
+        self.use_fp16 = use_fp16
+        self.lora_dir = lora_dir
+        self.lora_manager = LoRAManager(lora_dir)
+        model_name = "sd_style_transfer"
+        super().__init__(model_name, device, cache_dir, **kwargs)
+        self.load_model()
+
+    def load_model(self) -> None:
+        """Load Stable Diffusion model for style transfer."""
+        try:
+            from diffusers import (
+                StableDiffusionImg2ImgPipeline,
+                DPMSolverMultistepScheduler
+            )
+
+            print(f"Loading Stable Diffusion for style transfer...")
+
+            model_id = "stabilityai/stable-diffusion-2-1"
+            torch_dtype = torch.float16 if self.use_fp16 else torch.float32
+
+            self.model = StableDiffusionImg2ImgPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch_dtype,
+                cache_dir=str(self.cache_dir),
+                safety_checker=None
+            )
+
+            # Use faster scheduler
+            self.model.scheduler = DPMSolverMultistepScheduler.from_config(
+                self.model.scheduler.config
+            )
+
+            self.model = self.model.to(self.device)
+
+            # Enable memory efficient attention
+            try:
+                self.model.enable_attention_slicing()
+                self.model.enable_vae_slicing()
+            except:
+                pass
+
+            precision = "fp16" if self.use_fp16 else "fp32"
+            print(f"SD style transfer loaded successfully on {self.device} ({precision})")
+
+        except ImportError:
+            raise ImportError(
+                "diffusers is required for SD style transfer. "
+                "Install it with: pip install diffusers accelerate"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load SD style transfer: {e}")
+
+    @torch.no_grad()
+    def infer(
+        self,
+        content_image: Union[str, Path, Image.Image, np.ndarray],
+        style_prompt: str,
+        strength: float = 0.8,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 7.5,
+        lora_paths: Optional[Union[str, List[str]]] = None,
+        lora_weights: Optional[Union[float, List[float]]] = None,
+        seed: Optional[int] = None,
+        **kwargs
+    ) -> np.ndarray:
+        """Apply style using Stable Diffusion with optional LoRA.
+
+        Args:
+            content_image: Content image to stylize
+            style_prompt: Text prompt describing the desired style
+            strength: Strength of stylization (0-1)
+            num_inference_steps: Number of denoising steps
+            guidance_scale: Guidance scale
+            lora_paths: Optional LoRA file path(s) to apply
+            lora_weights: Optional LoRA weight(s) (0-1)
+            seed: Random seed for reproducibility
+            **kwargs: Additional parameters
+
+        Returns:
+            Stylized image as numpy array
+        """
+        # Preprocess content image
+        content_pil = self.preprocess_image(content_image, preserve_alpha=False)
+
+        # Ensure proper size (SD works best with multiples of 8)
+        w, h = content_pil.size
+        w = (w // 8) * 8
+        h = (h // 8) * 8
+        content_pil = content_pil.resize((w, h), Image.LANCZOS)
+
+        # Apply LoRAs if provided
+        if lora_paths:
+            if isinstance(lora_paths, str):
+                lora_paths = [lora_paths]
+            if lora_weights is None:
+                lora_weights = [0.8] * len(lora_paths)
+            elif isinstance(lora_weights, (int, float)):
+                lora_weights = [lora_weights] * len(lora_paths)
+
+            for lora_path, lora_weight in zip(lora_paths, lora_weights):
+                self.model = self.lora_manager.load_lora(
+                    self.model,
+                    lora_path,
+                    weight=lora_weight
+                )
+
+        # Set seed if provided
+        if seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+        else:
+            generator = None
+
+        # Generate stylized image
+        result = self.model(
+            prompt=style_prompt,
+            image=content_pil,
+            strength=strength,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            **kwargs
+        )
+
+        # Unload LoRAs for next inference
+        if lora_paths:
+            self.lora_manager.unload_loras(self.model)
+
+        # Convert to numpy
+        result_image = result.images[0]
+        result_np = np.array(result_image)
+
+        return result_np
+
+    def scan_available_loras(self) -> List[Dict[str, str]]:
+        """Get list of available LoRA files.
+
+        Returns:
+            List of dicts with 'name' and 'path' keys
+        """
+        return self.lora_manager.scan_loras()

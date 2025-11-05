@@ -15,8 +15,10 @@ from fusion_ai.models.qwen_edit import QwenEdit
 from fusion_ai.models.inpainting import LamaInpainting, StableDiffusionInpainting
 from fusion_ai.models.outpainting import StableDiffusionOutpainting
 from fusion_ai.models.upscale import RealESRGAN, StableDiffusionUpscale
-from fusion_ai.models.style_transfer import StyleTransfer, InstantStyleTransfer
+from fusion_ai.models.style_transfer import StyleTransfer, InstantStyleTransfer, StableDiffusionStyleTransfer
 from fusion_ai.models.frame_extension import FrameExtension, FrameInterpolation
+from fusion_ai.models.temporal_consistency import TemporalInpainting, TemporalOutpainting
+from fusion_ai.models.video_generation import WANVideoGenerator
 
 
 class FusionBridge:
@@ -590,6 +592,188 @@ def frame_extend_process(
             "message": "Frame extension completed",
             "output_path": output_path,
             "num_frames_generated": len(extended_frames),
+            "frame_index": frame_index
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def temporal_inpaint_process(
+    input_path: str,
+    mask_path: str,
+    output_path: str,
+    method: str = "lama",
+    temporal_consistency: float = 0.7,
+    prompt: str = "",
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5,
+    reset_state: bool = False
+) -> str:
+    """Process temporal inpainting - callable from Fusion."""
+    try:
+        # Load temporal inpainting model
+        model_id = f"temporal_inpaint_{method}"
+        if model_id not in _bridge.models or reset_state:
+            _bridge.models[model_id] = TemporalInpainting(method=method)
+            if reset_state and model_id in _bridge.models:
+                _bridge.models[model_id].reset()
+
+        model = _bridge.models[model_id]
+
+        # Reset state if requested
+        if reset_state:
+            model.reset()
+
+        # Run temporal inpainting
+        result = model.infer(
+            input_path,
+            mask_path,
+            prompt=prompt if prompt else "",
+            temporal_consistency=temporal_consistency,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale
+        )
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Temporal inpainting completed",
+            "output_path": output_path,
+            "method": method
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def temporal_outpaint_process(
+    input_path: str,
+    output_path: str,
+    extend_pixels: int = 256,
+    direction: str = "all",
+    temporal_consistency: float = 0.7,
+    prompt: str = "",
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5,
+    reset_state: bool = False
+) -> str:
+    """Process temporal outpainting - callable from Fusion."""
+    try:
+        # Load temporal outpainting model
+        model_id = "temporal_outpaint"
+        if model_id not in _bridge.models or reset_state:
+            _bridge.models[model_id] = TemporalOutpainting()
+            if reset_state and model_id in _bridge.models:
+                _bridge.models[model_id].reset()
+
+        model = _bridge.models[model_id]
+
+        # Reset state if requested
+        if reset_state:
+            model.reset()
+
+        # Run temporal outpainting
+        result = model.infer(
+            input_path,
+            extend_pixels=extend_pixels,
+            direction=direction,
+            prompt=prompt if prompt else "",
+            temporal_consistency=temporal_consistency,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale
+        )
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "Temporal outpainting completed",
+            "output_path": output_path
+        })
+
+    except Exception as e:
+        import traceback
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def wan_video_process(
+    prompt: str,
+    reference_frame_path: str,
+    output_path: str,
+    num_frames: int = 16,
+    width: int = 512,
+    height: int = 512,
+    inference_steps: int = 50,
+    guidance_scale: float = 7.5,
+    temporal_consistency: float = 0.7,
+    seed: int = 42,
+    frame_index: int = 0
+) -> str:
+    """Process WAN video generation - callable from Fusion."""
+    try:
+        # Load WAN video generator
+        model_id = "wan_video"
+        if model_id not in _bridge.models:
+            _bridge.models[model_id] = WANVideoGenerator()
+
+        model = _bridge.models[model_id]
+
+        # Prepare reference frames if provided
+        reference_frames = None
+        if reference_frame_path and reference_frame_path != "":
+            reference_frames = [reference_frame_path]
+
+        # Generate video frames
+        frames = model.infer(
+            prompt=prompt,
+            reference_frames=reference_frames,
+            num_frames=num_frames,
+            width=width,
+            height=height,
+            num_inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
+            temporal_consistency_strength=temporal_consistency,
+            seed=seed
+        )
+
+        # Get requested frame index
+        if frame_index >= len(frames):
+            frame_index = len(frames) - 1
+
+        result = frames[frame_index]
+
+        # Save output as EXR
+        from fusion_ai.utils.image import save_exr, image_to_float
+        result_float = image_to_float(result, dtype=np.float32)
+        save_exr(result_float, output_path)
+
+        return json.dumps({
+            "status": "success",
+            "message": "WAN video generation completed",
+            "output_path": output_path,
+            "num_frames_generated": len(frames),
             "frame_index": frame_index
         })
 

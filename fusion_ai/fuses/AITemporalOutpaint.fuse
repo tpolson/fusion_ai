@@ -1,0 +1,192 @@
+--[[
+AITemporalOutpaint Fuse for Blackmagic Fusion
+Temporally consistent image extension across video frames
+]]--
+
+FuRegisterClass("AITemporalOutpaint", CT_Tool, {
+    REGS_Name = "AI Temporal Outpaint",
+    REGS_Category = "AI Tools",
+    REGS_OpIconString = "TOP",
+    REGS_OpDescription = "Temporally consistent image extension",
+    REG_NoMotionBlurCtrls = true,
+    REG_NoBlendCtrls = true,
+})
+
+function Create()
+    -- Extension amount
+    InExtendPixels = self:AddInput("Extend Pixels", "ExtendPixels", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 256,
+        INP_Integer = true,
+        INP_MinScale = 64,
+        INP_MaxScale = 512,
+        IC_Visible = true,
+    })
+
+    -- Direction
+    InDirection = self:AddInput("Direction", "Direction", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "All Sides", },
+        { CCS_AddString = "Horizontal", },
+        { CCS_AddString = "Vertical", },
+        { CCS_AddString = "Top", },
+        { CCS_AddString = "Bottom", },
+        { CCS_AddString = "Left", },
+        { CCS_AddString = "Right", },
+        IC_Visible = true,
+    })
+
+    -- Temporal consistency strength
+    InTemporalConsistency = self:AddInput("Temporal Consistency", "TemporalConsistency", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 0.7,
+        INP_MinScale = 0.0,
+        INP_MaxScale = 1.0,
+        IC_Visible = true,
+    })
+
+    -- Prompt for guided generation
+    InPrompt = self:AddInput("Prompt", "Prompt", {
+        LINKID_DataType = "Text",
+        INPID_InputControl = "TextEditControl",
+        TEC_Lines = 2,
+        INP_Default = "",
+        IC_Visible = true,
+    })
+
+    -- Inference parameters
+    InInferenceSteps = self:AddInput("Inference Steps", "InferenceSteps", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 50,
+        INP_Integer = true,
+        INP_MinScale = 20,
+        INP_MaxScale = 100,
+        IC_Visible = true,
+    })
+
+    InGuidanceScale = self:AddInput("Guidance Scale", "GuidanceScale", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_Default = 7.5,
+        INP_MinScale = 1.0,
+        INP_MaxScale = 20.0,
+        IC_Visible = true,
+    })
+
+    -- Reset temporal state
+    InResetState = self:AddInput("Reset State", "ResetState", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        IC_Visible = true,
+    })
+
+    -- Device selection
+    InDevice = self:AddInput("Device", "Device", {
+        LINKID_DataType = "Number",
+        INPID_InputControl = "ComboControl",
+        INP_Default = 0.0,
+        INP_Integer = true,
+        { CCS_AddString = "CUDA", },
+        { CCS_AddString = "CPU", },
+        IC_Visible = true,
+    })
+
+    -- Input image
+    InImage = self:AddInput("Input", "Input", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+
+    -- Output extended image
+    OutImage = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Image",
+        LINK_Main = 1,
+    })
+end
+
+function Process(req)
+    local img = InImage:GetValue(req)
+    if not img then
+        return
+    end
+
+    -- Get parameters
+    local extend_pixels = InExtendPixels:GetValue(req).Value
+    local direction_idx = InDirection:GetValue(req).Value
+    local temporal_consistency = InTemporalConsistency:GetValue(req).Value
+    local prompt = InPrompt:GetValue(req).Value or ""
+    local inference_steps = InInferenceSteps:GetValue(req).Value
+    local guidance_scale = InGuidanceScale:GetValue(req).Value
+    local reset_state = InResetState:GetValue(req).Value == 1
+    local device_idx = InDevice:GetValue(req).Value
+
+    -- Map to actual values
+    local directions = {"all", "horizontal", "vertical", "top", "bottom", "left", "right"}
+    local direction = directions[direction_idx + 1] or "all"
+
+    local devices = {"cuda", "cpu"}
+    local device = devices[device_idx + 1] or "cuda"
+
+    -- Get Fusion temp directory
+    local comp = self.Comp
+    local temp_dir = comp:MapPath("Temp:")
+
+    -- Save input as EXR
+    local input_path = temp_dir .. "/fusion_ai_temporal_outpaint_input_" .. req.Time .. ".exr"
+    local output_path = temp_dir .. "/fusion_ai_temporal_outpaint_output_" .. req.Time .. ".exr"
+
+    img:Save(input_path)
+
+    -- Escape prompt for command line
+    local escaped_prompt = prompt:gsub('"', '\\"')
+
+    -- Build Python command
+    local python_cmd = string.format(
+        'python -c "from fusion_ai.fuses.fusion_bridge import temporal_outpaint_process; import json; result = temporal_outpaint_process(\'%s\', \'%s\', %d, \'%s\', %f, \'%s\', %d, %f, %s); print(result)"',
+        input_path,
+        output_path,
+        extend_pixels,
+        direction,
+        temporal_consistency,
+        escaped_prompt,
+        inference_steps,
+        guidance_scale,
+        reset_state and "True" or "False"
+    )
+
+    -- Execute command
+    local handle = io.popen(python_cmd)
+    local json_result = ""
+    if handle then
+        json_result = handle:read("*a")
+        handle:close()
+    end
+
+    -- Load output image
+    local out_img = nil
+    if json_result and json_result ~= "" then
+        local success = pcall(function()
+            local loaded = Image(output_path)
+            if loaded then
+                out_img = loaded
+            end
+        end)
+    end
+
+    -- Clean up temp files
+    os.remove(input_path)
+    if out_img then
+        os.remove(output_path)
+    end
+
+    -- Set output
+    OutImage:Set(req, out_img or img)
+end
