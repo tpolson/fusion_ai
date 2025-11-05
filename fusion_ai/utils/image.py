@@ -8,18 +8,25 @@ from PIL import Image
 
 def load_image(
     image_path: Union[str, Path],
-    mode: str = "RGB"
+    mode: Optional[str] = "RGB",
+    preserve_alpha: bool = True
 ) -> Image.Image:
     """Load an image from file.
 
     Args:
         image_path: Path to image file
-        mode: Image mode (RGB, L, etc.)
+        mode: Image mode (RGB, RGBA, L, etc.). If None, keeps original mode
+        preserve_alpha: If True and image has alpha, convert to RGBA instead of RGB
 
     Returns:
         PIL Image
     """
     image = Image.open(image_path)
+
+    # Preserve alpha channel if requested
+    if preserve_alpha and image.mode in ('RGBA', 'LA', 'PA') and mode == "RGB":
+        mode = "RGBA"
+
     if mode:
         image = image.convert(mode)
     return image
@@ -137,3 +144,168 @@ def apply_colormap(
     except ImportError:
         print("matplotlib not available, returning grayscale depth map")
         return depth_map
+
+
+def load_exr(
+    exr_path: Union[str, Path],
+    channels: Optional[list] = None
+) -> np.ndarray:
+    """Load an OpenEXR file.
+
+    Args:
+        exr_path: Path to EXR file
+        channels: List of channel names to load (default: ['R', 'G', 'B'])
+
+    Returns:
+        Numpy array in fp32 format
+    """
+    try:
+        import OpenEXR
+        import Imath
+        import array
+
+        exr_path = str(exr_path)
+        exr_file = OpenEXR.InputFile(exr_path)
+        header = exr_file.header()
+
+        dw = header['dataWindow']
+        width = dw.max.x - dw.min.x + 1
+        height = dw.max.y - dw.min.y + 1
+
+        # Default to RGB channels
+        if channels is None:
+            available_channels = header['channels'].keys()
+            if 'A' in available_channels:
+                channels = ['R', 'G', 'B', 'A']
+            else:
+                channels = ['R', 'G', 'B']
+
+        # Read channels
+        channel_data = []
+        for channel in channels:
+            if channel in header['channels']:
+                channel_str = exr_file.channel(channel, Imath.PixelType(Imath.PixelType.FLOAT))
+                channel_array = array.array('f', channel_str)
+                channel_data.append(np.array(channel_array).reshape(height, width))
+
+        # Stack channels
+        if len(channel_data) == 1:
+            return channel_data[0].astype(np.float32)
+        else:
+            return np.stack(channel_data, axis=-1).astype(np.float32)
+
+    except ImportError:
+        raise ImportError("OpenEXR package required. Install with: pip install OpenEXR")
+
+
+def save_exr(
+    image: np.ndarray,
+    output_path: Union[str, Path],
+    channels: Optional[list] = None
+) -> None:
+    """Save image as OpenEXR file.
+
+    Args:
+        image: Image array (fp16 or fp32)
+        output_path: Output file path
+        channels: Channel names (default: ['R', 'G', 'B'] or ['R', 'G', 'B', 'A'])
+    """
+    try:
+        import OpenEXR
+        import Imath
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Convert to float32 if needed
+        if image.dtype == np.float16:
+            image = image.astype(np.float32)
+
+        # Determine channels
+        if image.ndim == 2:
+            # Single channel (e.g., depth map)
+            height, width = image.shape
+            if channels is None:
+                channels = ['Y']
+            channel_data = {'Y': image.tobytes()}
+        else:
+            # Multi-channel
+            height, width, num_channels = image.shape
+            if channels is None:
+                if num_channels == 3:
+                    channels = ['R', 'G', 'B']
+                elif num_channels == 4:
+                    channels = ['R', 'G', 'B', 'A']
+                else:
+                    channels = [f'C{i}' for i in range(num_channels)]
+
+            channel_data = {}
+            for i, channel_name in enumerate(channels[:num_channels]):
+                channel_data[channel_name] = image[:, :, i].tobytes()
+
+        # Create header
+        header = OpenEXR.Header(width, height)
+        float_chan = Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+        header['channels'] = {name: float_chan for name in channels}
+
+        # Write file
+        out = OpenEXR.OutputFile(str(output_path), header)
+        out.writePixels(channel_data)
+        out.close()
+
+    except ImportError:
+        raise ImportError("OpenEXR package required. Install with: pip install OpenEXR")
+
+
+def image_to_float(
+    image: Union[Image.Image, np.ndarray],
+    dtype: type = np.float32
+) -> np.ndarray:
+    """Convert image to floating point format (fp16 or fp32).
+
+    Args:
+        image: Input image (PIL Image or numpy array)
+        dtype: Target dtype (np.float16 or np.float32)
+
+    Returns:
+        Float array normalized to [0, 1]
+    """
+    if isinstance(image, Image.Image):
+        image = np.array(image)
+
+    # Convert to float and normalize based on input type
+    if image.dtype == np.uint8:
+        return (image / 255.0).astype(dtype)
+    elif image.dtype == np.uint16:
+        return (image / 65535.0).astype(dtype)
+    elif image.dtype in (np.float16, np.float32, np.float64):
+        return image.astype(dtype)
+    else:
+        # For other types, just convert
+        return image.astype(dtype)
+
+
+def float_to_image(
+    array: np.ndarray,
+    output_dtype: type = np.uint8,
+    clip: bool = True
+) -> np.ndarray:
+    """Convert floating point array to image format.
+
+    Args:
+        array: Float array (assumed to be in [0, 1] range)
+        output_dtype: Target dtype (np.uint8 or np.uint16)
+        clip: Whether to clip values to valid range
+
+    Returns:
+        Image array in target dtype
+    """
+    if clip:
+        array = np.clip(array, 0, 1)
+
+    if output_dtype == np.uint8:
+        return (array * 255.0).astype(np.uint8)
+    elif output_dtype == np.uint16:
+        return (array * 65535.0).astype(np.uint16)
+    else:
+        return array.astype(output_dtype)

@@ -55,29 +55,64 @@ class BaseModel(ABC):
     def preprocess_image(
         self,
         image: Union[str, Path, Image.Image, np.ndarray],
-        target_size: Optional[tuple] = None
-    ) -> Image.Image:
+        target_size: Optional[tuple] = None,
+        preserve_alpha: bool = True,
+        mode: Optional[str] = None
+    ) -> Union[Image.Image, tuple]:
         """Preprocess image for model inference.
 
         Args:
             image: Input image (path, PIL Image, or numpy array)
             target_size: Optional target size (width, height)
+            preserve_alpha: If True, preserve alpha channel separately
+            mode: Target mode (RGB/RGBA/None for auto)
 
         Returns:
-            Preprocessed PIL Image
+            Preprocessed PIL Image, or tuple of (RGB Image, alpha channel) if alpha preserved
         """
+        alpha_channel = None
+
         if isinstance(image, (str, Path)):
-            image = Image.open(image).convert("RGB")
+            image = Image.open(image)
         elif isinstance(image, np.ndarray):
-            image = Image.fromarray(image).convert("RGB")
-        elif isinstance(image, Image.Image):
-            image = image.convert("RGB")
-        else:
+            # Handle numpy arrays - detect number of channels
+            if image.ndim == 2:
+                image = Image.fromarray(image).convert("L")
+            elif image.ndim == 3:
+                if image.shape[2] == 3:
+                    image = Image.fromarray(image).convert("RGB")
+                elif image.shape[2] == 4:
+                    image = Image.fromarray(image).convert("RGBA")
+                else:
+                    raise ValueError(f"Unsupported number of channels: {image.shape[2]}")
+            else:
+                raise ValueError(f"Unsupported array shape: {image.shape}")
+        elif not isinstance(image, Image.Image):
             raise ValueError(f"Unsupported image type: {type(image)}")
+
+        # Extract and preserve alpha channel if requested
+        if preserve_alpha and image.mode in ('RGBA', 'LA', 'PA'):
+            # Extract alpha channel before conversion
+            if image.mode == 'RGBA':
+                alpha_channel = image.split()[3]  # Get alpha channel
+                if target_size:
+                    alpha_channel = alpha_channel.resize(target_size, Image.LANCZOS)
+
+            # Convert to RGB if mode not specified
+            if mode is None:
+                mode = "RGB"
+
+        # Convert to target mode
+        if mode is None:
+            mode = "RGB"
+        if image.mode != mode:
+            image = image.convert(mode)
 
         if target_size:
             image = image.resize(target_size, Image.LANCZOS)
 
+        if alpha_channel is not None:
+            return image, alpha_channel
         return image
 
     def postprocess_output(

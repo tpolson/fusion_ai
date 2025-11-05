@@ -23,6 +23,7 @@ class DepthAnythingV2(BaseModel):
         model_size: MODEL_SIZES = "base",
         device: Optional[str] = None,
         cache_dir: Optional[Path] = None,
+        use_fp16: bool = False,
         **kwargs
     ):
         """Initialize DepthAnythingV2 model.
@@ -31,9 +32,11 @@ class DepthAnythingV2(BaseModel):
             model_size: Model size (small/base/large)
             device: Device to run inference on
             cache_dir: Directory to cache models
+            use_fp16: Use fp16 precision (default: fp32)
             **kwargs: Additional arguments
         """
         self.model_size = model_size
+        self.use_fp16 = use_fp16
         model_name = f"depth_anything_v2_{model_size}"
         super().__init__(model_name, device, cache_dir, **kwargs)
 
@@ -55,13 +58,15 @@ class DepthAnythingV2(BaseModel):
 
             self.model = AutoModelForDepthEstimation.from_pretrained(
                 self.config["repo_id"],
-                cache_dir=str(self.cache_dir)
+                cache_dir=str(self.cache_dir),
+                torch_dtype=torch.float16 if self.use_fp16 else torch.float32
             )
 
             self.model = self.model.to(self.device)
             self.model.eval()
 
-            print(f"DepthAnythingV2 {self.model_size} loaded successfully on {self.device}")
+            precision = "fp16" if self.use_fp16 else "fp32"
+            print(f"DepthAnythingV2 {self.model_size} loaded successfully on {self.device} ({precision})")
 
         except ImportError:
             raise ImportError(
@@ -77,26 +82,43 @@ class DepthAnythingV2(BaseModel):
         image: Union[str, Path, Image.Image, np.ndarray],
         normalize: bool = True,
         colormap: Optional[str] = None,
+        output_dtype: type = np.float32,
+        preserve_alpha: bool = True,
         **kwargs
-    ) -> np.ndarray:
+    ) -> Union[np.ndarray, tuple]:
         """Generate depth map from input image.
 
         Args:
             image: Input image
-            normalize: Whether to normalize depth values to 0-255
+            normalize: Whether to normalize depth values to 0-1 (for float) or 0-255 (for uint8)
             colormap: Optional OpenCV colormap name (e.g., 'COLORMAP_INFERNO')
+            output_dtype: Output data type (np.float16, np.float32, or np.uint8)
+            preserve_alpha: If True and input has alpha, return (depth, alpha) tuple
             **kwargs: Additional inference parameters
 
         Returns:
-            Depth map as numpy array
+            Depth map as numpy array, or (depth map, alpha channel) if preserve_alpha=True
         """
-        # Preprocess image
-        pil_image = self.preprocess_image(image)
+        # Preprocess image and extract alpha if present
+        preprocess_result = self.preprocess_image(image, preserve_alpha=preserve_alpha)
+        alpha_channel = None
+
+        if isinstance(preprocess_result, tuple):
+            pil_image, alpha_channel = preprocess_result
+        else:
+            pil_image = preprocess_result
+
         original_size = pil_image.size
 
         # Prepare inputs
         inputs = self.processor(images=pil_image, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        # Convert inputs to the same dtype as model if using fp16
+        if self.use_fp16:
+            inputs = {k: v.to(self.device).half() if v.dtype == torch.float32 else v.to(self.device)
+                     for k, v in inputs.items()}
+        else:
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         # Run inference
         outputs = self.model(**inputs)
@@ -110,19 +132,38 @@ class DepthAnythingV2(BaseModel):
             align_corners=False,
         )
 
-        # Convert to numpy
-        depth = prediction.squeeze().cpu().numpy()
+        # Convert to numpy in fp32 first
+        depth = prediction.squeeze().cpu().float().numpy()
 
         # Normalize if requested
         if normalize:
-            depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+            depth_min = depth.min()
+            depth_max = depth.max()
+            if depth_max - depth_min > 0:
+                depth = (depth - depth_min) / (depth_max - depth_min)
+                # Scale based on output dtype
+                if output_dtype == np.uint8:
+                    depth = depth * 255.0
+            else:
+                depth = np.zeros_like(depth)
+
+        # Convert to target dtype
+        if output_dtype == np.float16:
+            depth = depth.astype(np.float16)
+        elif output_dtype == np.float32:
+            depth = depth.astype(np.float32)
+        elif output_dtype == np.uint8:
             depth = depth.astype(np.uint8)
 
-        # Apply colormap if requested
+        # Apply colormap if requested (converts to RGB uint8)
         if colormap and hasattr(cv2, colormap):
             colormap_id = getattr(cv2, colormap)
-            depth = cv2.applyColorMap(depth.astype(np.uint8), colormap_id)
+            depth = cv2.applyColorMap(depth.astype(np.uint8) if depth.dtype != np.uint8 else depth,
+                                     colormap_id)
 
+        # Return depth with alpha if present
+        if preserve_alpha and alpha_channel is not None:
+            return depth, np.array(alpha_channel)
         return depth
 
     def infer_batch(

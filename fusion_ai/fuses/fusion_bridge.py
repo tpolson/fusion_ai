@@ -65,7 +65,10 @@ class FusionBridge:
         output_path: str,
         model_size: str = "base",
         normalize: bool = True,
-        colormap: Optional[str] = None
+        colormap: Optional[str] = None,
+        use_fp16: bool = False,
+        output_format: str = "auto",
+        alpha_path: Optional[str] = None
     ) -> str:
         """Process image for depth estimation.
 
@@ -75,36 +78,82 @@ class FusionBridge:
             model_size: Model size to use
             normalize: Whether to normalize output
             colormap: Optional colormap name
+            use_fp16: Use fp16 precision (default: fp32)
+            output_format: Output format (auto/exr/png) - auto uses exr for fp16/fp32
+            alpha_path: Optional path to save alpha channel separately
 
         Returns:
-            Status message
+            Status message with paths
         """
         try:
+            # Determine output dtype based on format and precision
+            if output_format == "exr" or (output_format == "auto" and not colormap):
+                output_dtype = np.float16 if use_fp16 else np.float32
+                use_exr = True
+            else:
+                output_dtype = np.uint8
+                use_exr = False
+
             # Load model if not loaded
-            model_id = f"depth_{model_size}"
+            model_id = f"depth_{model_size}_{'fp16' if use_fp16 else 'fp32'}"
             if model_id not in self.models:
-                self.load_depth_model(model_size)
+                self.models[model_id] = DepthAnythingV2(
+                    model_size=model_size,
+                    use_fp16=use_fp16
+                )
 
             model = self.models[model_id]
 
             # Run inference
-            depth = model.infer(
+            result = model.infer(
                 input_path,
                 normalize=normalize,
-                colormap=colormap
+                colormap=colormap,
+                output_dtype=output_dtype,
+                preserve_alpha=True
             )
 
-            # Save output
-            Image.fromarray(depth).save(output_path)
+            # Handle result (might be depth only or (depth, alpha) tuple)
+            if isinstance(result, tuple):
+                depth, alpha = result
+                has_alpha = True
+            else:
+                depth = result
+                has_alpha = False
+
+            # Save depth output
+            if use_exr and not colormap:
+                from fusion_ai.utils.image import save_exr
+                save_exr(depth, output_path)
+            else:
+                if depth.dtype in (np.float16, np.float32):
+                    # Convert float to uint8 for PNG
+                    from fusion_ai.utils.image import float_to_image
+                    depth = float_to_image(depth, output_dtype=np.uint8)
+                Image.fromarray(depth).save(output_path)
+
+            # Save alpha channel if present and requested
+            alpha_saved = None
+            if has_alpha and alpha_path:
+                Image.fromarray(alpha).save(alpha_path)
+                alpha_saved = alpha_path
 
             return json.dumps({
                 "status": "success",
                 "message": "Depth map generated",
-                "output_path": output_path
+                "output_path": output_path,
+                "alpha_path": alpha_saved,
+                "format": "exr" if use_exr else "png",
+                "dtype": str(output_dtype)
             })
 
         except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
+            import traceback
+            return json.dumps({
+                "status": "error",
+                "message": str(e),
+                "traceback": traceback.format_exc()
+            })
 
     def process_qwen(
         self,
@@ -159,10 +208,16 @@ def depth_anything_v2_process(
     output_path: str,
     model_size: str = "base",
     normalize: bool = True,
-    colormap: Optional[str] = None
+    colormap: Optional[str] = None,
+    use_fp16: bool = False,
+    output_format: str = "auto",
+    alpha_path: Optional[str] = None
 ) -> str:
     """Process depth estimation - callable from Fusion."""
-    return _bridge.process_depth(input_path, output_path, model_size, normalize, colormap)
+    return _bridge.process_depth(
+        input_path, output_path, model_size, normalize, colormap,
+        use_fp16, output_format, alpha_path
+    )
 
 
 def qwen_process(
