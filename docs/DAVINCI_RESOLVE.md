@@ -331,13 +331,18 @@ Project Organization:
 
 ## Version Compatibility
 
-**Tested with:**
-- ✅ DaVinci Resolve 18.x
+**Tested and confirmed working with:**
+- ✅ **DaVinci Resolve Studio 20.x** (latest)
+- ✅ **Fusion Studio 20.x** (latest)
 - ✅ DaVinci Resolve 19.x
-- ✅ DaVinci Resolve Studio (paid version)
-- ✅ DaVinci Resolve Free
+- ✅ DaVinci Resolve 18.x
+- ✅ DaVinci Resolve Free (all versions)
 
 **Note:** Free version has same Fusion capabilities as Studio for AI nodes!
+
+**Minimum versions:**
+- DaVinci Resolve 16+ (Fusion page support)
+- Fusion Studio 9+ (standalone)
 
 ## Resolve vs Fusion Studio - Which to Use?
 

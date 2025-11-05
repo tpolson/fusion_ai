@@ -249,6 +249,9 @@ inpainted = wan.infer(
 - **CUDA:** 11.8+ (for NVIDIA GPUs)
 - **VRAM:** 8GB minimum, 16GB+ recommended
 - **Disk Space:** ~50GB for all models cached
+- **Fusion/Resolve:**
+  - Fusion Studio 9+ (tested with **v20**)
+  - DaVinci Resolve 16+ (tested with **v20**)
 
 ## 🐛 Troubleshooting
 
